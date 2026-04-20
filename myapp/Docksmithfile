@@ -1,0 +1,7 @@
+FROM alpine:3.18
+WORKDIR /app
+ENV APP_ENV=production
+ENV GREETING=Hello
+COPY *.txt /app/
+RUN echo "Build complete. GREETING=$GREETING" && ls /app
+CMD ["/bin/sh", "-c", "echo $GREETING from Docksmith && cat /app/message.txt"]

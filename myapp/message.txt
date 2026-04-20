@@ -1,0 +1,3 @@
+Docksmith container is running!
+Built with: FROM COPY RUN WORKDIR ENV CMD
+changed line
