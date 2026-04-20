@@ -1,0 +1,9 @@
+# Binaries
+docksmith
+*.exe
+
+# Build artifacts
+*.out
+
+# Go workspace
+go.sum
