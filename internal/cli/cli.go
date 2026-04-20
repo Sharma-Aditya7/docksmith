@@ -6,9 +6,10 @@
 //   • Sample Docksmithfile and sample app (printed / written on request)
 //   • ParseFlags helper consumed by main.go
 
-package main
+package cli
 
 import (
+	"docksmith/internal/build"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,7 +27,7 @@ import (
 // Columns: NAME  TAG  ID(12-char digest prefix)  CREATED
 func CmdImages(stateDir string) error {
 	imagesDir := filepath.Join(stateDir, "images")
-	manifests, err := listManifests(imagesDir)
+	manifests, err := build.ListManifests(imagesDir)
 	if err != nil {
 		return err
 	}
@@ -66,7 +67,7 @@ func CmdRmi(stateDir, nameTag string) error {
 		nameTag += ":latest"
 	}
 
-	m, err := loadManifest(imagesDir, nameTag)
+	m, err := build.LoadManifest(imagesDir, nameTag)
 	if err != nil {
 		return fmt.Errorf("image %q not found", nameTag)
 	}
@@ -75,7 +76,7 @@ func CmdRmi(stateDir, nameTag string) error {
 	// Note: if a base image shares a layer, that layer will be deleted too —
 	// this is the specified behaviour per section 8 Constraints.
 	for _, l := range m.Layers {
-		p := layerPath(layersDir, l.Digest)
+		p := build.LayerPath(layersDir, l.Digest)
 		if removeErr := os.Remove(p); removeErr != nil && !os.IsNotExist(removeErr) {
 			fmt.Fprintf(os.Stderr, "warning: could not remove layer %s: %v\n", l.Digest[:16], removeErr)
 		}
@@ -136,27 +137,27 @@ func CmdImportBase(opts ImportBaseOptions) error {
 
 	// Normalize the tar: re-pack with sorted entries and zeroed timestamps
 	// so the same source always produces the same digest (reproducibility).
-	tarData, err = normalizeTar(tarData)
+	tarData, err = build.NormalizeTar(tarData)
 	if err != nil {
 		return fmt.Errorf("normalizing tar: %w", err)
 	}
 
 	// Store as a single layer
-	digest, err := writeLayer(layersDir, tarData)
+	digest, err := build.WriteLayer(layersDir, tarData)
 	if err != nil {
 		return err
 	}
 
-	m := &Manifest{
+	m := &build.Manifest{
 		Name:    name,
 		Tag:     tag,
 		Created: time.Now().UTC().Format(time.RFC3339),
-		Config: ImageConfig{
+		Config: build.ImageConfig{
 			Env:        []string{},
 			Cmd:        []string{},
 			WorkingDir: "/",
 		},
-		Layers: []LayerEntry{
+		Layers: []build.LayerEntry{
 			{
 				Digest:    digest,
 				Size:      int64(len(tarData)),
@@ -165,7 +166,7 @@ func CmdImportBase(opts ImportBaseOptions) error {
 		},
 	}
 
-	if err := writeManifest(m, imagesDir); err != nil {
+	if err := build.WriteManifest(m, imagesDir); err != nil {
 		return err
 	}
 
@@ -251,14 +252,14 @@ func ParseArgs(args []string) (*ParsedCommand, error) {
 				if i >= len(rest) {
 					return nil, fmt.Errorf("-e requires KEY=VALUE")
 				}
-				k, v, ok := parseEnvArg(rest[i])
+				k, v, ok := build.ParseEnvArg(rest[i])
 				if !ok {
 					return nil, fmt.Errorf("-e: invalid KEY=VALUE %q", rest[i])
 				}
 				pc.EnvOverrides[k] = v
 			} else if strings.HasPrefix(rest[i], "-e=") {
 				kv := strings.TrimPrefix(rest[i], "-e=")
-				k, v, ok := parseEnvArg(kv)
+				k, v, ok := build.ParseEnvArg(kv)
 				if !ok {
 					return nil, fmt.Errorf("-e: invalid KEY=VALUE %q", kv)
 				}
@@ -449,7 +450,7 @@ func InspectLayer(stateDir, digest string) {
 		digest = "sha256:" + digest
 	}
 	layersDir := filepath.Join(stateDir, "layers")
-	p := layerPath(layersDir, digest)
+	p := build.LayerPath(layersDir, digest)
 	fi, err := os.Stat(p)
 	if err != nil {
 		fmt.Printf("Layer %s not found: %v\n", digest, err)
@@ -461,7 +462,7 @@ func InspectLayer(stateDir, digest string) {
 // DumpCacheIndex pretty-prints the cache index for debugging.
 func DumpCacheIndex(stateDir string) {
 	cacheDir := filepath.Join(stateDir, "cache")
-	idx, err := loadCacheIndex(cacheDir)
+	idx, err := build.LoadCacheIndex(cacheDir)
 	if err != nil {
 		fmt.Printf("cache index error: %v\n", err)
 		return

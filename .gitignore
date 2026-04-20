@@ -2,8 +2,13 @@
 docksmith
 *.exe
 
-# Build artifacts
+# Go
+bin/
+pkg/
 *.out
 
-# Go workspace
-go.sum
+# OS
+.DS_Store
+
+# IDE
+.vscode/

@@ -2,7 +2,7 @@
 // Covers: Docksmithfile parser, build engine, image format (manifest + layers),
 //         build cache, content-addressed layer storage, all 6 instructions.
 
-package main
+package build
 
 import (
 	"archive/tar"
@@ -14,9 +14,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -75,6 +77,11 @@ func writeManifest(m *Manifest, imagesDir string) error {
 	return os.WriteFile(path, raw, 0644)
 }
 
+// WriteManifest is an exported wrapper for manifest writes used by other packages.
+func WriteManifest(m *Manifest, imagesDir string) error {
+	return writeManifest(m, imagesDir)
+}
+
 // loadManifest reads a manifest by name:tag.
 func loadManifest(imagesDir, nameTag string) (*Manifest, error) {
 	path := filepath.Join(imagesDir, nameTag+".json")
@@ -87,6 +94,11 @@ func loadManifest(imagesDir, nameTag string) (*Manifest, error) {
 		return nil, err
 	}
 	return &m, nil
+}
+
+// LoadManifest is an exported wrapper for manifest reads used by other packages.
+func LoadManifest(imagesDir, nameTag string) (*Manifest, error) {
+	return loadManifest(imagesDir, nameTag)
 }
 
 // listManifests returns all manifests in imagesDir, deduplicated by name:tag.
@@ -127,6 +139,11 @@ func listManifests(imagesDir string) ([]*Manifest, error) {
 		return out[i].Tag < out[j].Tag
 	})
 	return out, nil
+}
+
+// ListManifests is an exported wrapper for listing manifests.
+func ListManifests(imagesDir string) ([]*Manifest, error) {
+	return listManifests(imagesDir)
 }
 
 // ────────────────────────────────────────────────────────────
@@ -198,6 +215,11 @@ func layerPath(layersDir, digest string) string {
 	return filepath.Join(layersDir, hex+".tar")
 }
 
+// LayerPath is an exported wrapper for digest-based layer file paths.
+func LayerPath(layersDir, digest string) string {
+	return layerPath(layersDir, digest)
+}
+
 // writeLayer stores b in layersDir, returns digest.
 func writeLayer(layersDir string, b []byte) (string, error) {
 	digest := digestBytes(b)
@@ -206,6 +228,11 @@ func writeLayer(layersDir string, b []byte) (string, error) {
 		return digest, nil // already exists, idempotent
 	}
 	return digest, os.WriteFile(p, b, 0644)
+}
+
+// WriteLayer is an exported wrapper for writing content-addressed layers.
+func WriteLayer(layersDir string, b []byte) (string, error) {
+	return writeLayer(layersDir, b)
 }
 
 // buildTarFromDir creates a deterministic tar of rootDir relative to base.
@@ -333,6 +360,11 @@ func normalizeTar(input []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// NormalizeTar is an exported wrapper used by import-base.
+func NormalizeTar(input []byte) ([]byte, error) {
+	return normalizeTar(input)
+}
+
 
 // extractTar extracts a tar archive into destDir.
 func extractTar(tarData []byte, destDir string) error {
@@ -398,6 +430,11 @@ func extractImageLayers(m *Manifest, layersDir, destDir string) error {
 	return nil
 }
 
+// ExtractImageLayers is an exported wrapper used by runtime.
+func ExtractImageLayers(m *Manifest, layersDir, destDir string) error {
+	return extractImageLayers(m, layersDir, destDir)
+}
+
 // ────────────────────────────────────────────────────────────
 // 4.  BUILD CACHE
 // ────────────────────────────────────────────────────────────
@@ -416,6 +453,11 @@ func loadCacheIndex(cacheDir string) (CacheIndex, error) {
 	}
 	var idx CacheIndex
 	return idx, json.Unmarshal(raw, &idx)
+}
+
+// LoadCacheIndex is an exported wrapper used by CLI debug helpers.
+func LoadCacheIndex(cacheDir string) (CacheIndex, error) {
+	return loadCacheIndex(cacheDir)
 }
 
 func saveCacheIndex(cacheDir string, idx CacheIndex) error {
@@ -1096,6 +1138,11 @@ func parseEnvArg(arg string) (key, val string, ok bool) {
 	return arg[:idx], arg[idx+1:], true
 }
 
+// ParseEnvArg is an exported wrapper used by runtime.
+func ParseEnvArg(arg string) (key, val string, ok bool) {
+	return parseEnvArg(arg)
+}
+
 func buildEnvList(env map[string]string) []string {
 	var out []string
 	for k, v := range env {
@@ -1103,6 +1150,11 @@ func buildEnvList(env map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// BuildEnvList is an exported wrapper used by runtime.
+func BuildEnvList(env map[string]string) []string {
+	return buildEnvList(env)
 }
 
 func layerFileSize(layersDir, digest string) (int64, error) {
@@ -1163,5 +1215,61 @@ func diffSnapshots(before, after map[string]string, rootDir string) []string {
 	}
 	sort.Strings(changed)
 	return changed
+}
+
+// runInChroot executes shellCmd inside rootDir using Linux namespaces and chroot.
+func runInChroot(rootDir, shellCmd string, env []string, workdir string) error {
+	if workdir == "" {
+		workdir = "/"
+	}
+
+	setupMinimalDevProc(rootDir)
+
+	procDir := filepath.Join(rootDir, "proc")
+	_ = os.MkdirAll(procDir, 0755)
+	_ = syscall.Mount("proc", procDir, "proc", 0, "")
+	defer func() { _ = syscall.Unmount(procDir, syscall.MNT_DETACH) }()
+
+	var exports []string
+	for _, kv := range env {
+		idx := strings.Index(kv, "=")
+		if idx > 0 {
+			k := kv[:idx]
+			v := kv[idx+1:]
+			safeV := strings.ReplaceAll(v, "'", "'\\''")
+			exports = append(exports, fmt.Sprintf("export %s='%s'", k, safeV))
+		}
+	}
+
+	fullCmd := shellCmd
+	if len(exports) > 0 {
+		fullCmd = strings.Join(exports, "; ") + "; " + shellCmd
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", fullCmd)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWPID |
+			syscall.CLONE_NEWNS |
+			syscall.CLONE_NEWUTS,
+		Chroot: rootDir,
+	}
+	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+	cmd.Dir = workdir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+func setupMinimalDevProc(rootDir string) {
+	for _, d := range []string{"proc", "dev", "sys", "tmp", "etc"} {
+		_ = os.MkdirAll(filepath.Join(rootDir, d), 0755)
+	}
+
+	resolvPath := filepath.Join(rootDir, "etc", "resolv.conf")
+	if _, err := os.Stat(resolvPath); os.IsNotExist(err) {
+		_ = os.WriteFile(resolvPath, []byte(""), 0644)
+	}
 }
 

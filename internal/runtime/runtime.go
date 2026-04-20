@@ -1,9 +1,10 @@
 // runtime.go 
 //go:build linux
 
-package main
+package runtime
 
 import (
+	"docksmith/internal/build"
 	"errors"
 	"fmt"
 	"os"
@@ -104,7 +105,7 @@ func CmdRun(opts RunOptions) error {
 		nameTag += ":latest"
 	}
 
-	m, err := loadManifest(imagesDir, nameTag)
+	m, err := build.LoadManifest(imagesDir, nameTag)
 	if err != nil {
 		return fmt.Errorf("image %q not found", nameTag)
 	}
@@ -135,14 +136,14 @@ func CmdRun(opts RunOptions) error {
 	}
 	defer os.RemoveAll(tmpRoot) // cleanup enforces host isolation
 
-	if err := extractImageLayers(m, layersDir, tmpRoot); err != nil {
+	if err := build.ExtractImageLayers(m, layersDir, tmpRoot); err != nil {
 		return fmt.Errorf("assembling image: %w", err)
 	}
 
 	// Merge image ENV with -e overrides (overrides take precedence).
 	envMap := make(map[string]string)
 	for _, kv := range m.Config.Env {
-		k, v, ok := parseEnvArg(kv)
+		k, v, ok := build.ParseEnvArg(kv)
 		if ok {
 			envMap[k] = v
 		}
@@ -150,7 +151,7 @@ func CmdRun(opts RunOptions) error {
 	for k, v := range opts.EnvOverrides {
 		envMap[k] = v
 	}
-	envList := buildEnvList(envMap)
+	envList := build.BuildEnvList(envMap)
 
 	workdir := m.Config.WorkingDir
 	if workdir == "" {
@@ -171,7 +172,7 @@ func CmdRun(opts RunOptions) error {
 }
 
 // childMain is kept so main.go compiles — re-exec approach not used.
-func childMain(_ []string) {
+func ChildMain(_ []string) {
 	fmt.Fprintln(os.Stderr, "docksmith: unexpected __child__ invocation")
 	os.Exit(1)
 }
